@@ -1,0 +1,634 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Lexiscan — Mobile Document Summaries</title>
+  <meta name="description" content="Lexiscan — on-device OCR & emotionally resonant, legally-aware summaries. Demo PWA scaffold." />
+  <!-- Tailwind via CDN (for demo / rapid styling) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Tesseract.js (WASM) CDN - demo usage. Replace with local WASM files for full offline. -->
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+  <meta name="theme-color" content="#1e3a8a" />
+  <!-- Inline manifest (data URI) to keep single-file -->
+  <link rel="manifest" href='data:application/manifest+json,{"name":"Lexiscan","short_name":"Lexiscan","start_url":".","display":"standalone","background_color":"#ffffff","theme_color":"#1e3a8a","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 24 24%27%3E%3Crect width=%2724%27 height=%2724%27 rx=%274%27 fill=%231e3a8a%27/%3E%3Cpath d=%27M6 7h12v2H6zm0 4h8v2H6z%27 fill=%27%23fff%27/%3E%3C/svg%3E','sizes':'256x256','type':'image/svg+xml'}]}' />
+  <style>
+    /* Small custom tweaks beyond Tailwind */
+    :root{color-scheme:light;}
+    @media (prefers-color-scheme:dark){:root{color-scheme:dark}}
+    /* Bounding box base */
+    .bbox { position:absolute; border:2px dashed rgba(59,130,246,0.9); background:rgba(59,130,246,0.06); pointer-events:none; }
+    .bbox.legal { border-color: rgba(220,38,38,0.95); background: rgba(220,38,38,0.06); }
+  </style>
+</head>
+<body class="bg-slate-50 dark:bg-slate-900 text-slate-900 dark:text-slate-100 min-h-screen">
+  <div class="max-w-4xl mx-auto p-4">
+    <header class="flex items-center justify-between mb-3">
+      <div class="flex items-center gap-3">
+        <div class="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-700 to-sky-500 flex items-center justify-center text-white font-bold shadow-lg">LX</div>
+        <div>
+          <h1 class="text-lg font-semibold">Lexiscan</h1>
+          <p class="text-sm text-slate-500 dark:text-slate-300">On-device OCR • Legal & Student summaries • Privacy-first</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-xs px-2 py-1 bg-white/60 dark:bg-slate-800/60 rounded-full border">🔒 Local only</span>
+        <button id="install-btn" class="hidden text-xs px-3 py-1 rounded-md bg-sky-600 text-white">Install</button>
+      </div>
+    </header>
+
+    <!-- Capture / Import Card -->
+    <section class="bg-white dark:bg-slate-800 rounded-xl shadow p-4 mb-4">
+      <div class="flex items-start justify-between gap-4">
+        <div class="flex-1">
+          <label class="block text-sm font-medium">Capture or import a document</label>
+          <p class="text-xs text-slate-500 dark:text-slate-300 mb-2">Use the camera for best results. Scanning securely on your device — no data leaves your phone.</p>
+
+          <div class="flex flex-wrap gap-2">
+            <input id="file-input" type="file" accept="image/*,application/pdf" class="hidden" />
+            <button id="import-btn" class="px-3 py-2 rounded-md bg-white border text-sm">📁 Import</button>
+            <button id="capture-btn" class="px-3 py-2 rounded-md bg-sky-600 text-white text-sm">📷 Capture</button>
+            <button id="sample-btn" class="px-3 py-2 rounded-md bg-white border text-sm">🧪 Sample text</button>
+            <select id="mode-select" class="ml-auto rounded-md border px-2 py-1 text-sm" aria-label="Select mode">
+              <option value="legal">Legal Mode</option>
+              <option value="student">Student Mode</option>
+            </select>
+          </div>
+
+          <div class="mt-3 text-xs text-slate-500 dark:text-slate-300">
+            <span id="mode-microcopy">Legal Mode: precise, clause-aware; flags potential risks.</span>
+          </div>
+        </div>
+
+        <div class="w-48 text-right">
+          <div class="text-xs text-slate-400">OCR status</div>
+          <div id="ocr-status" class="text-sm font-medium">idle</div>
+          <div class="text-xs text-slate-400 mt-2">Confidence</div>
+          <div id="ocr-confidence" class="text-sm font-medium">—</div>
+        </div>
+      </div>
+
+      <div class="mt-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div class="rounded-lg overflow-hidden bg-slate-100 dark:bg-slate-900 border">
+          <div class="relative">
+            <img id="preview" alt="Document preview" class="w-full h-64 object-contain bg-white dark:bg-slate-800" />
+            <canvas id="overlay" class="absolute inset-0 w-full h-full pointer-events-none"></canvas>
+            <!-- bounding boxes appended as divs inside this container -->
+          </div>
+        </div>
+
+        <div class="rounded-lg p-3 bg-white dark:bg-slate-800 border">
+          <div class="flex items-center justify-between mb-2">
+            <strong class="text-sm">Summary</strong>
+            <div class="text-xs text-slate-400">Mode: <span id="current-mode-label">Legal</span></div>
+          </div>
+
+          <div>
+            <div class="text-sm font-semibold mb-1">Key Points</div>
+            <ul id="keypoints" class="space-y-2" role="list" aria-live="polite">
+              <li class="text-xs text-slate-500">No document loaded. Use Capture / Import or Sample to test.</li>
+            </ul>
+          </div>
+
+          <div class="mt-3">
+            <div class="text-sm font-semibold mb-1">Quote Highlights</div>
+            <div id="quotes" class="space-y-1" aria-live="polite"></div>
+          </div>
+
+          <div class="mt-3 text-xs text-slate-400">
+            Tap a key point to expand. Click the image to hide overlays.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Expanded view & history -->
+    <section class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div class="bg-white dark:bg-slate-800 p-3 rounded-xl border">
+        <div class="flex items-center justify-between">
+          <strong>Expanded</strong>
+          <button id="clear-btn" class="text-xs px-2 py-1 rounded-md border">Clear</button>
+        </div>
+        <div id="expanded" class="mt-3 text-sm text-slate-600 dark:text-slate-300">Tap a key point to reveal the source paragraph and show the bounding box on the image.</div>
+      </div>
+
+      <div class="bg-white dark:bg-slate-800 p-3 rounded-xl border">
+        <div class="flex items-center justify-between">
+          <strong>History (local)</strong>
+          <button id="clear-history" class="text-xs px-2 py-1 rounded-md border">Clear</button>
+        </div>
+        <div id="history" class="mt-3 space-y-2 text-sm text-slate-600 dark:text-slate-300">No history yet.</div>
+      </div>
+    </section>
+
+    <footer class="mt-6 text-center text-xs text-slate-400">
+      Lexiscan demo — local-only OCR & heuristics. Not legal advice.
+    </footer>
+  </div>
+
+  <!-- hidden video element for capture -->
+  <video id="video-stream" autoplay playsinline class="hidden"></video>
+
+  <script>
+  /************************************************************************
+   * Lexiscan - Single-file PWA (Tailwind + Tesseract CDN)
+   * Preferences: Tesseract.js (WASM) via CDN, localStorage for history, Tailwind CSS via CDN.
+   *
+   * Key features:
+   * - Camera capture & image import
+   * - Tesseract.js OCR producing paragraphs & bounding boxes
+   * - Heuristic summarizer: Key Points (3–5), Quote Highlights (1–2)
+   * - Legal Mode / Student Mode behavior
+   * - Tap-to-Expand: show paragraph + bounding box on image
+   * - Basic local history via localStorage
+   * - Inline service worker (blob) for simple caching
+   *
+   * TODOs:
+   * - Replace heuristics with a local LLM runtime for deeper, legally-accurate summaries.
+   * - Pre-bundle Tesseract WASM for offline usage and update worker load paths accordingly.
+   * - Replace localStorage with IndexedDB to persist images and larger datasets.
+   ************************************************************************/
+
+  // Config
+  const HISTORY_KEY = 'lexiscan_hist_v1';
+  const MAX_HISTORY = 16;
+  const RISK_KEYWORDS = ["indemnif","waive","automatic renew","auto-renew","binding arbitration","liabilit","penalt","breach","terminate","forfeit","assignment","assign","warranty","governing law"];
+  const DEFINITION_PATTERNS = [/["“”][^"“”]{1,80}["“”]\s+(means|refers to|is defined as)/i, /\bdefined as\b/i];
+  const EMOTIONAL_MARKERS = ["important","urgent","please note","note that","attention","carefully","warning","critical"];
+
+  // Elements
+  const fileInput = document.getElementById('file-input');
+  const importBtn = document.getElementById('import-btn');
+  const captureBtn = document.getElementById('capture-btn');
+  const sampleBtn = document.getElementById('sample-btn');
+  const preview = document.getElementById('preview');
+  const overlay = document.getElementById('overlay');
+  const overlayCtx = overlay.getContext('2d');
+  const ocrStatus = document.getElementById('ocr-status');
+  const ocrConfidence = document.getElementById('ocr-confidence');
+  const keypointsEl = document.getElementById('keypoints');
+  const quotesEl = document.getElementById('quotes');
+  const expandedEl = document.getElementById('expanded');
+  const historyEl = document.getElementById('history');
+  const clearBtn = document.getElementById('clear-btn');
+  const clearHistoryBtn = document.getElementById('clear-history');
+  const modeSelect = document.getElementById('mode-select');
+  const currentModeLabel = document.getElementById('current-mode-label');
+  const modeMicrocopy = document.getElementById('mode-microcopy');
+  const installBtn = document.getElementById('install-btn');
+  const videoStream = document.getElementById('video-stream');
+
+  // State
+  let OCR_DATA = { paragraphs: [], text: "" };
+  let currentImage = null; // Image object
+  let pendingInstallPrompt = null;
+
+  // Utilities
+  const escapeHtml = (s) => String(s || '').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+
+  // Resize overlay to match preview display
+  function fitOverlay(){
+    overlay.width = preview.clientWidth;
+    overlay.height = preview.clientHeight;
+    overlay.style.width = preview.clientWidth + 'px';
+    overlay.style.height = preview.clientHeight + 'px';
+  }
+  window.addEventListener('resize', fitOverlay);
+  preview.onload = fitOverlay;
+
+  // Import button wiring
+  importBtn.addEventListener('click', ()=> fileInput.click());
+  fileInput.addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    await loadImage(url);
+    URL.revokeObjectURL(url);
+    fileInput.value = '';
+  });
+
+  // Capture via camera snapshot
+  captureBtn.addEventListener('click', async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+      videoStream.srcObject = stream;
+      await new Promise(res => setTimeout(res, 300)); // small warmup
+      const canvas = document.createElement('canvas');
+      canvas.width = videoStream.videoWidth || 1280;
+      canvas.height = videoStream.videoHeight || 720;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(videoStream, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      // stop camera
+      stream.getTracks().forEach(t => t.stop());
+      await loadImage(dataUrl);
+    } catch (err) {
+      alert('Camera error: ' + err.message + '. Try using Import instead.');
+    }
+  });
+
+  // Sample text demo (no image)
+  sampleBtn.addEventListener('click', async () => {
+    const sampleText = `“Effective Date” means the date on which the Agreement is signed. The Provider shall indemnify and hold harmless the Client against any liability arising from gross negligence. This Agreement will automatically renew for successive one-year terms unless terminated in writing at least 60 days prior to expiration. Please note: the Service is provided "as-is" without warranties.`;
+    OCR_DATA = {
+      text: sampleText,
+      paragraphs: sampleText.split(/\n+/).map((t,i)=>({ id: 'p' + i, text: t, bbox: null }))
+    };
+    currentImage = null;
+    preview.src = '';
+    clearBoxes();
+    renderSummaries();
+    saveHistorySnapshot();
+  });
+
+  // Load image, show preview, run OCR
+  async function loadImage(src){
+    ocrStatus.textContent = 'loading image';
+    OCR_DATA = { paragraphs: [], text: '' };
+    clearBoxes();
+    preview.src = src;
+    currentImage = new Image();
+    currentImage.crossOrigin = 'anonymous';
+    currentImage.src = src;
+    await new Promise((res,rej)=>{
+      currentImage.onload = res;
+      currentImage.onerror = rej;
+    });
+    fitOverlay();
+    await runOCR(currentImage);
+  }
+
+  // Clear existing bounding box elements
+  function clearBoxes(){
+    document.querySelectorAll('.bbox').forEach(el => el.remove());
+    overlayCtx.clearRect(0,0,overlay.width, overlay.height);
+  }
+
+  // Run Tesseract.js OCR (client-side WASM)
+  async function runOCR(image){
+    ocrStatus.textContent = 'starting OCR';
+    ocrConfidence.textContent = '—';
+    OCR_DATA = { paragraphs: [], text: '' };
+
+    try {
+      // create worker
+      const worker = Tesseract.createWorker({
+        logger: m => {
+          if (m.status) ocrStatus.textContent = `ocr: ${m.status} ${(m.progress*100||0).toFixed(0)}%`;
+        }
+      });
+
+      // NOTE: For fully offline, provide local tesseract-core.wasm and language files and use worker.loadFromPath or similar.
+      await worker.load();
+      await worker.loadLanguage('eng');
+      await worker.initialize('eng');
+      const { data } = await worker.recognize(image);
+      await worker.terminate();
+
+      OCR_DATA.text = data.text || '';
+      // Build paragraphs from lines heuristically
+      const paragraphs = [];
+      let current = null;
+      (data.lines || []).forEach((ln, idx) => {
+        const lnText = ln.text.trim();
+        const lnBox = ln.bbox || ln;
+        if (!current) {
+          current = { id: 'p' + idx, text: lnText, bbox: {...lnBox} };
+          paragraphs.push(current);
+        } else {
+          // vertical gap heuristic
+          const gap = (lnBox.y0 || lnBox.y) - (current.bbox.y1 || current.bbox.y + (current.bbox.h||0));
+          if (gap < 18) {
+            current.text += ' ' + lnText;
+            current.bbox.y1 = Math.max(current.bbox.y1 || (current.bbox.y + (current.bbox.h||0)), lnBox.y1 || (lnBox.y + (lnBox.h||0)));
+            current.bbox.x0 = Math.min(current.bbox.x0 || (current.bbox.x||0), lnBox.x0 || lnBox.x || 0);
+            current.bbox.x1 = Math.max(current.bbox.x1 || (current.bbox.x + (current.bbox.w||0)), lnBox.x1 || (lnBox.x + (lnBox.w||0)));
+          } else {
+            current = { id: 'p' + paragraphs.length, text: lnText, bbox: {...lnBox} };
+            paragraphs.push(current);
+          }
+        }
+      });
+      if (paragraphs.length === 0) {
+        paragraphs.push({ id: 'p0', text: OCR_DATA.text, bbox: null });
+      }
+      OCR_DATA.paragraphs = paragraphs;
+
+      ocrStatus.textContent = 'OCR complete';
+      const conf = (data.words && data.words.length) ? (data.words.reduce((s,w)=>s+w.confidence,0)/data.words.length) : 0;
+      ocrConfidence.textContent = conf ? Math.round(conf) + '%' : '—';
+
+      renderBoxes(paragraphs);
+      renderSummaries();
+      saveHistorySnapshot();
+
+    } catch (err) {
+      ocrStatus.textContent = 'ocr failed';
+      ocrConfidence.textContent = '—';
+      alert('OCR error: ' + err.message + '\nTry a clearer image or sample text.');
+    }
+  }
+
+  // Create bounding box DIVs scaled to preview display
+  function renderBoxes(paragraphs){
+    clearBoxes();
+    if (!currentImage) return;
+    const imgW = currentImage.width, imgH = currentImage.height;
+    const dispW = preview.clientWidth, dispH = preview.clientHeight;
+    const scale = Math.min(dispW / imgW, dispH / imgH);
+    const offsetX = (dispW - imgW * scale)/2;
+    const offsetY = (dispH - imgH * scale)/2;
+
+    paragraphs.forEach(p => {
+      if (!p.bbox) return;
+      // accomodate tesseract bbox naming differences
+      const x0 = p.bbox.x0 ?? p.bbox.x ?? 0;
+      const y0 = p.bbox.y0 ?? p.bbox.y ?? 0;
+      const x1 = p.bbox.x1 ?? (p.bbox.x + p.bbox.w) ?? x0 + 10;
+      const y1 = p.bbox.y1 ?? (p.bbox.y + p.bbox.h) ?? y0 + 10;
+      const left = Math.round(offsetX + x0 * scale);
+      const top = Math.round(offsetY + y0 * scale);
+      const width = Math.max(10, Math.round((x1 - x0) * scale));
+      const height = Math.max(6, Math.round((y1 - y0) * scale));
+      const el = document.createElement('div');
+      el.className = 'bbox';
+      el.style.left = left + 'px';
+      el.style.top = top + 'px';
+      el.style.width = width + 'px';
+      el.style.height = height + 'px';
+      el.dataset.pid = p.id;
+      el.style.display = 'none';
+      document.querySelector('.object-contain') // try to find
+      const container = preview.parentElement;
+      container.appendChild(el);
+    });
+  }
+
+  // Show only the box for paragraph id
+  function showBoxForParagraph(pid, risk=false){
+    document.querySelectorAll('.bbox').forEach(el => {
+      if (el.dataset.pid === pid) {
+        el.style.display = 'block';
+        el.classList.toggle('legal', !!risk);
+        el.animate([{opacity:0},{opacity:1}], { duration:220, fill: 'forwards' });
+      } else {
+        el.style.display = 'none';
+      }
+    });
+  }
+
+  // Hide all boxes on image click
+  preview.parentElement.addEventListener('click', ()=> {
+    document.querySelectorAll('.bbox').forEach(el => el.style.display = 'none');
+  });
+
+  // Summarization heuristics
+  function renderSummaries(){
+    const paragraphs = OCR_DATA.paragraphs || (OCR_DATA.text ? [{id:'p0', text: OCR_DATA.text, bbox: null}] : []);
+    if (!paragraphs.length) {
+      keypointsEl.innerHTML = '<li class="text-xs text-slate-500">No text found. Try importing a clearer image or use Sample.</li>';
+      quotesEl.innerHTML = '';
+      return;
+    }
+
+    const mode = modeSelect.value;
+    currentModeLabel.textContent = mode === 'legal' ? 'Legal' : 'Student';
+    modeMicrocopy.textContent = mode === 'legal' ? 'Legal Mode: precise, clause-aware; flags potential risks.' : 'Student Mode: clear, empathetic, and didactic — explains in plain language.';
+
+    const bullets = generateKeyPoints(paragraphs, mode);
+    const quotes = generateQuotes(paragraphs);
+
+    // render bullets
+    keypointsEl.innerHTML = '';
+    bullets.forEach(b => {
+      const li = document.createElement('li');
+      li.className = 'p-2 rounded-md hover:bg-slate-50 dark:hover:bg-slate-700 cursor-pointer';
+      li.tabIndex = 0;
+      li.innerHTML = `<div class="flex justify-between items-start gap-2">
+        <div class="flex-1"><div class="font-semibold text-sm">${escapeHtml(b.title)}</div><div class="text-xs text-slate-500 mt-1">${escapeHtml(b.summary)}</div></div>
+        <div class="text-right"><div class="text-xs ${b.risk ? 'text-red-600 font-bold' : 'text-slate-400'}">${b.risk ? '⚠️ Risk' : ''}</div><div class="text-xs text-slate-400 mt-1">${Math.round(b.score*100)}%</div></div>
+      </div>`;
+      li.addEventListener('click', ()=> expandBullet(b));
+      li.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') expandBullet(b); });
+      keypointsEl.appendChild(li);
+    });
+
+    // render quotes
+    quotesEl.innerHTML = '';
+    if (quotes.length === 0) {
+      quotesEl.innerHTML = '<div class="text-xs text-slate-500">No notable quotes found.</div>';
+    } else {
+      quotes.forEach(q => {
+        const d = document.createElement('div');
+        d.className = 'text-sm italic text-slate-700 dark:text-slate-200 p-2 rounded';
+        d.textContent = q;
+        quotesEl.appendChild(d);
+      });
+    }
+
+    // reset expanded
+    expandedEl.innerHTML = '<div class="text-xs text-slate-500">Tap a key point to expand and reveal the original paragraph plus its location on the image.</div>';
+  }
+
+  function expandBullet(b){
+    expandedEl.innerHTML = `<div class="p-2 rounded bg-slate-50 dark:bg-slate-800">
+      <div class="flex justify-between items-center"><div class="font-semibold">${escapeHtml(b.title)}</div>${b.risk?'<div class="text-red-600 font-bold">⚠️ Risk</div>':''}</div>
+      <div class="text-xs text-slate-500 mt-2">${escapeHtml(b.summary)}</div>
+      <div class="mt-3 p-2 bg-white dark:bg-slate-900 border rounded"><div class="text-xs font-medium">Source paragraph</div><div class="text-sm text-slate-700 dark:text-slate-200 mt-1">${escapeHtml(b.paragraph)}</div></div>
+    </div>`;
+    if (b.paragraphId) showBoxForParagraph(b.paragraphId, b.risk);
+    expandedEl.scrollIntoView({behavior:'smooth'});
+  }
+
+  function generateKeyPoints(paragraphs, mode='legal'){
+    // Score paragraphs with simple heuristics
+    const scored = paragraphs.map(p => {
+      const txt = (p.text || '').trim();
+      const lower = txt.toLowerCase();
+      let score = Math.min(0.9, Math.log10(Math.max(txt.length, 10))/2);
+      RISK_KEYWORDS.forEach(k => { if (lower.includes(k)) score += 0.3; });
+      EMOTIONAL_MARKERS.forEach(k => { if (lower.includes(k)) score += 0.18; });
+      DEFINITION_PATTERNS.forEach(rx => { if (rx.test(txt)) score += 0.45; });
+      return { paragraph: p, score: Math.min(1, score) };
+    });
+    scored.sort((a,b) => b.score - a.score);
+    const count = Math.min(5, Math.max(3, Math.ceil(scored.length/2)));
+    const selected = scored.slice(0, count);
+
+    const bullets = selected.map(s => {
+      const p = s.paragraph;
+      const paragraphText = p.text || '';
+      const isDef = DEFINITION_PATTERNS.some(rx => rx.test(paragraphText));
+      const risk = RISK_KEYWORDS.some(k => paragraphText.toLowerCase().includes(k));
+      const title = isDef ? detectDefinitionTitle(paragraphText) : createShortTitle(paragraphText);
+      const summary = mode === 'student' ? studentParaphrase(paragraphText) : legalSummarize(paragraphText);
+      return { title, summary, score: s.score, risk, paragraph: paragraphText, paragraphId: p.id || null };
+    });
+    return bullets;
+  }
+
+  function generateQuotes(paragraphs){
+    const quotes = [];
+    paragraphs.forEach(p => {
+      const sents = p.text.split(/(?<=[.!?])\s+/);
+      sents.forEach(s => {
+        const lower = s.toLowerCase();
+        if (s.length < 200 && (s.includes('"') || RISK_KEYWORDS.some(r=>lower.includes(r)) || EMOTIONAL_MARKERS.some(m=>lower.includes(m)))) {
+          quotes.push(s.trim());
+        }
+      });
+    });
+    if (quotes.length === 0 && paragraphs[0]) {
+      const s = paragraphs[0].text.split(/(?<=[.!?])\s+/)[0];
+      if (s) quotes.push(s.trim());
+    }
+    return Array.from(new Set(quotes)).slice(0,2);
+  }
+
+  function detectDefinitionTitle(text){
+    const m = text.match(/["“”]([^"“”]{2,80})["“”]\s+(means|is defined as|refers to)/i);
+    if (m) return `${m[1]} (definition)`;
+    const m2 = text.match(/\b([A-Z][a-z]{2,30})\b.*\bis defined as\b/i);
+    if (m2) return `${m2[1]} (definition)`;
+    return 'Definition';
+  }
+
+  function createShortTitle(text){
+    const s = text.split(/(?<=[.!?])\s+/)[0];
+    return s.length > 48 ? s.substring(0,45) + '…' : s;
+  }
+
+  function legalSummarize(text){
+    const m = text.match(/\b(The|This|You|The Provider|The Client|Provider|Client|Seller|Buyer)[\s\S]{0,80}/i);
+    const summary = (m ? m[0] : text).replace(/\s+/g,' ').trim();
+    return summary.length > 160 ? summary.substring(0,157) + '…' : summary;
+  }
+
+  function studentParaphrase(text){
+    // Simple replacements to make language friendlier
+    const map = [
+      [/indemnif\w*/gi,"cover (pay for) losses"],
+      [/liabilit\w*/gi,"responsibility"],
+      [/terminate/gi,"end the agreement"],
+      [/warrant(y|ies)?/gi,"promise (assurance)"],
+      [/as-?is/gi,"with no guarantees"],
+      [/automatic(ally)? renew/gi,"renew automatically (unless you cancel)"],
+      [/arbitration/gi,"settle disputes with an arbitrator (not in court)"],
+      [/assign/gi,"transfer your rights to someone else"]
+    ];
+    let s = text;
+    map.forEach(([rx,rep]) => s = s.replace(rx, rep));
+    const sentences = s.split(/(?<=[.!?])\s+/).slice(0,2).join(' ');
+    return `💡 This means: ${sentences || s}`;
+  }
+
+  // History (localStorage)
+  function saveHistorySnapshot(){
+    try {
+      const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+      const snapshot = {
+        id: Date.now(),
+        ts: new Date().toISOString(),
+        text: OCR_DATA.text || (OCR_DATA.paragraphs || []).map(p=>p.text).join('\n'),
+        paragraphs: OCR_DATA.paragraphs || [],
+        mode: modeSelect.value
+      };
+      hist.unshift(snapshot);
+      while (hist.length > MAX_HISTORY) hist.pop();
+      localStorage.setItem(HISTORY_KEY, JSON.stringify(hist));
+      renderHistory();
+    } catch (e) {
+      console.warn('History save failed', e);
+    }
+  }
+
+  function renderHistory(){
+    const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    historyEl.innerHTML = '';
+    if (!hist.length) {
+      historyEl.innerHTML = '<div class="text-xs text-slate-500">No history yet.</div>';
+      return;
+    }
+    hist.forEach(item => {
+      const d = document.createElement('div');
+      d.className = 'flex items-center justify-between p-2 rounded border';
+      d.innerHTML = `<div class="flex-1"><div class="font-medium text-xs">${new Date(item.ts).toLocaleString()}</div><div class="text-xs text-slate-500 mt-1">${escapeHtml(item.text.substring(0,80))}${item.text.length>80?'…':''}</div></div><div class="ml-2"><button class="open-btn text-xs px-2 py-1 rounded border" data-id="${item.id}">Open</button></div>`;
+      historyEl.appendChild(d);
+      d.querySelector('.open-btn').addEventListener('click', ()=> loadHistoryItem(item.id));
+    });
+  }
+
+  function loadHistoryItem(id){
+    const hist = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    const item = hist.find(h => h.id === id);
+    if (!item) return alert('History item not found');
+    OCR_DATA = { paragraphs: item.paragraphs || [], text: item.text || '' };
+    preview.src = ''; // images not stored in this demo; to persist images use IndexedDB
+    clearBoxes();
+    renderBoxes(OCR_DATA.paragraphs || []);
+    renderSummaries();
+  }
+
+  // Clear controls
+  clearBtn.addEventListener('click', ()=>{
+    OCR_DATA = { paragraphs: [], text: '' };
+    preview.src = '';
+    clearBoxes();
+    keypointsEl.innerHTML = '<li class="text-xs text-slate-500">Cleared. Use Capture / Import to start.</li>';
+    quotesEl.innerHTML = '';
+    expandedEl.innerHTML = '<div class="text-xs text-slate-500">Tap a key point to expand and reveal source context.</div>';
+  });
+
+  clearHistoryBtn.addEventListener('click', ()=>{
+    if (!confirm('Clear all local history?')) return;
+    localStorage.removeItem(HISTORY_KEY);
+    renderHistory();
+  });
+
+  // Mode toggle
+  modeSelect.addEventListener('change', ()=> {
+    currentModeLabel.textContent = modeSelect.value === 'legal' ? 'Legal' : 'Student';
+    renderSummaries();
+  });
+
+  // Service worker registration (inline blob so single-file)
+  if ('serviceWorker' in navigator) {
+    const swCode = `
+      const CACHE = 'lexiscan-shell-v1';
+      const urlsToCache = ['.'];
+      self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(urlsToCache))); self.skipWaiting(); });
+      self.addEventListener('activate', e => { e.waitUntil(self.clients.claim()); });
+      self.addEventListener('fetch', e => {
+        e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)).catch(()=>caches.match('.')));
+      });
+    `;
+    const blob = new Blob([swCode], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    navigator.serviceWorker.register(url).catch(err => console.warn('SW register failed', err));
+  }
+
+  // PWA install prompt handling
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    pendingInstallPrompt = e;
+    installBtn.classList.remove('hidden');
+    installBtn.addEventListener('click', async () => {
+      if (!pendingInstallPrompt) return;
+      pendingInstallPrompt.prompt();
+      const choice = await pendingInstallPrompt.userChoice;
+      pendingInstallPrompt = null;
+      installBtn.classList.add('hidden');
+    });
+  });
+
+  // Initialize
+  (function init(){
+    renderHistory();
+    // initial placeholders
+    keypointsEl.innerHTML = '<li class="text-xs text-slate-500">No document loaded. Use Capture / Import or Sample text to test.</li>';
+    preview.alt = 'Document preview';
+  })();
+
+  </script>
+</body>
+</html>
